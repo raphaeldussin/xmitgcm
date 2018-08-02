@@ -70,7 +70,7 @@ def open_mdsdataset(data_dir, grid_dir=None,
         e.g. "1990-1-1 0:0:0" (See CF conventions [1]_)
     calendar : string, optional
         A calendar allowed by CF conventions [1]_
-    geometry : {'sphericalpolar', 'cartesian', 'llc', 'curvilinear'}
+    geometry : {'sphericalpolar', 'cartesian', 'llc', 'curvilinear','aste'}
         MITgcm grid geometry specifier
     grid_vars_to_coords : boolean, optional
         Whether to promote grid variables to coordinate status
@@ -121,7 +121,7 @@ def open_mdsdataset(data_dir, grid_dir=None,
         if read_grid == False:
             swap_dims = False
         else:
-            swap_dims = False if geometry in ('llc', 'curvilinear') else True
+            swap_dims = False if geometry in ('llc', 'curvilinear', 'aste') else True
 
     # some checks for argument consistency
     if swap_dims and not read_grid:
@@ -260,7 +260,7 @@ def _swap_dimensions(ds, geometry, drop_old=True):
     # this fixes problems
     ds = ds.reset_coords()
 
-    if geometry.lower() in ('llc', 'curvilinear'):
+    if geometry.lower() in ('llc', 'curvilinear', 'aste'):
         raise ValueError("Can't swap dimensions if `geometry` is `llc`")
 
     # first squeeze all the coordinates
@@ -310,7 +310,7 @@ class _MDSDataStore(xr.backends.common.AbstractDataStore):
         """
 
         self.geometry = geometry.lower()
-        allowed_geometries = ['cartesian', 'sphericalpolar', 'llc', 'curvilinear']
+        allowed_geometries = ['cartesian', 'sphericalpolar', 'llc', 'curvilinear', 'aste']
         if self.geometry not in allowed_geometries:
             raise ValueError('Unexpected value for parameter `geometry`. '
                              'It must be one of the following: %s' %
@@ -339,6 +339,7 @@ class _MDSDataStore(xr.backends.common.AbstractDataStore):
         # the dimensions are theoretically the same for all datasets
         [self._dimensions.append(k) for k in dimensions]
         self.llc = (self.geometry == 'llc')
+        self.aste = (self.geometry == 'aste')
 
         if nz is None:
             self.nz = _guess_model_nz(self.grid_dir)
@@ -349,6 +350,8 @@ class _MDSDataStore(xr.backends.common.AbstractDataStore):
         # we don't need to know ny if using llc
         if self.llc and (nx is not None):
             ny = nx
+        if self.aste and (nx is not None):
+            ny = nx
 
         # Now we need to figure out the horizontal dimensions nx, ny
         # nface is the number of llc faces
@@ -357,14 +360,17 @@ class _MDSDataStore(xr.backends.common.AbstractDataStore):
             # dimensions without reading any files
             self.ny, self.nx = ny, nx
             self.nface = LLC_NUM_FACES if self.llc else None
+            self.nface = 6 if self.aste else None
         else:
             # have to peek at the grid file metadata
+            # RD needs fix
             self.nface, self.ny, self.nx = (
                 _guess_model_horiz_dims(self.grid_dir, self.llc))
 
         self.layers = _guess_layers(data_dir)
 
-        if self.llc:
+        if self.llc or self.aste:
+            print(self.nx,self.nface)
             nyraw = self.nx*self.nface
         else:
             nyraw = self.ny
@@ -405,7 +411,7 @@ class _MDSDataStore(xr.backends.common.AbstractDataStore):
         # possibly add the llc dimension
         # seems sloppy to hard code this here
         # TODO: move this metadata to variables.py
-        if self.llc:
+        if self.llc or self.aste:
             self._dimensions.append(LLC_FACE_DIMNAME)
             data = np.arange(self.nface)
             attrs = {'standard_name': 'face_index'}
@@ -471,8 +477,10 @@ class _MDSDataStore(xr.backends.common.AbstractDataStore):
                 # print(vname, dims, data.shape)
                 #Sizes of grid variables can vary between mitgcm versions. Check for
                 #such inconsistency and correct if so
+                # RD test
                 (vname, dims, data, attrs) = self.fix_inconsistent_variables(vname, dims, data, attrs)
 
+                print(vname, dims, data, attrs)
                 thisvar = xr.Variable(dims, data, attrs)
                 self._variables[vname] = thisvar
                 # print(type(data), type(thisvar._data), thisvar._in_memory)
@@ -528,7 +536,7 @@ class _MDSDataStore(xr.backends.common.AbstractDataStore):
         basename = os.path.join(ddir, fname_base)
         try:
             vardata = read_mds(basename, iternum, endian=self.endian,
-                               llc=self.llc, llc_method=self.llc_method)
+                               llc=self.llc, llc_method=self.llc_method,aste=self.aste)
         except IOError as ioe:
             # that might have failed because there was no meta file present
             # we can try to get around this by specifying the shape and dtype
@@ -547,7 +555,7 @@ class _MDSDataStore(xr.backends.common.AbstractDataStore):
             vardata = read_mds(basename, iternum, endian=self.endian,
                            dtype=self.default_dtype,
                            shape=data_shape, llc=self.llc,
-                           llc_method=self.llc_method)
+                           llc_method=self.llc_method,aste=self.aste)
 
         for vname, data in vardata.items():
             # we now have to revert to the original prefix once the file is read
@@ -601,7 +609,7 @@ class _MDSDataStore(xr.backends.common.AbstractDataStore):
                 # ok to promote to numpy array because data is always 1D
                 data = np.atleast_1d(np.asarray(data).squeeze())
 
-            if self.llc:
+            if self.llc or self.aste:
                 dims, data = _reshape_for_llc(dims, data)
 
             # need to add an extra dimension at the beginning if we have a time
